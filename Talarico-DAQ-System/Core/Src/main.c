@@ -29,7 +29,7 @@
 
 // Debugging options... 1 for on, 0 for off
 #define DEBUG_MODE_MINIMAL			(1)
-#define DEBUG_MODE_VERBOSE			(1)
+#define DEBUG_MODE_VERBOSE			(0)
 
 /* Private function prototypes -----------------------------------------------*/
 void SystemClock_Config(void);
@@ -43,11 +43,16 @@ int main(void) {
 
 	double startFreq = 30E3;		// start frequency in Hz
 	double clockFreq =  16E6;		// clock frequency in Hz
-	int numSteps = 200;				// # of steps
-	int iter = numSteps + 1;
+	int numSteps = 10;				// # of steps
+	int iter = 0;
 	double freqSteps = 2;			// frequency steps in Hz
 	int settleTime = 15;
 	signed short realData, imgData;
+	double magnitude, gainFactor, impedance;
+	double avgMag = 0;
+	double avgGain = 0;
+	double avgImpedance = 0;
+	long calibrationImpedance = 200000;
 
 
 
@@ -115,6 +120,7 @@ int main(void) {
 	AD5933_SetRegisterValue(AD5933_START_FREQ_REG_HB, AD5933_CONTROL_RANGE(AD5933_200mVpp_RANGE), 1);
 	AD5933_SetRegisterValue(AD5933_CONTROL_REG_HB, AD5933_PGA_GAIN(AD5933_PGA_GAIN_X1), 1);
 
+
 	// Initialize starting frequency
 	AD5933_SetRegisterValue(AD5933_CONTROL_REG_HB, AD5933_CONTROL_FUNCTION(AD5933_INIT_START_FREQ), 1);
 
@@ -128,8 +134,8 @@ int main(void) {
 	status = 0;
 
 	// Do this loop until the sweep is complete
-	while(((status & AD5933_STATUS_SWEEP_DONE) != 4) & (iter != 0)) {
-		// Do this loop until data is valid
+	while(((status & AD5933_STATUS_SWEEP_DONE) != 4) & (iter < numSteps)) {
+		// Wait for data to be valid
 		do {
 			status = AD5933_GetRegisterValue(AD5933_STATUS_REG,1);
 
@@ -159,25 +165,100 @@ int main(void) {
 			imgData = imgData - 65536;
 		}
 
-		double magnitude, gainFactor, impedance;
-		long calibrationImpedance = 200000;
 
 		magnitude = sqrtf((realData * realData) + (imgData * imgData));
 
-		if (iter == numSteps + 1) {
+
 		gainFactor = 1 / (magnitude * calibrationImpedance);
-		}
 
 		impedance = 1/(magnitude*gainFactor);
 
-		iter = iter - 1;
+		avgMag = (avgMag + magnitude);
+		avgGain = (avgGain + gainFactor);
+		avgImpedance = (avgImpedance + impedance);
+
+		AD5933_SetRegisterValue(AD5933_CONTROL_REG_HB, AD5933_CONTROL_FUNCTION(AD5933_INCR_FREQ), 1);
+		iter = iter + 1;
 
 		//HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
 		//HAL_Delay(500);
 
 
 	}
+
+	magnitude = avgMag/numSteps;
+	gainFactor = avgGain/numSteps;
+	avgImpedance = avgImpedance/numSteps;
+
+
+	// REPLACE CALIBRATION IMPEDANCE WITH UNKNOWN
+	for (int i = 0; i < 5; i++) {
+		HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
+		HAL_Delay(500);
+	}
+
+	while (1) {
+		iter = 0;
+		magnitude = 0;
+		impedance = 0;
+		avgImpedance = 0;
+		avgMag = 0;
+		while(((status & AD5933_STATUS_SWEEP_DONE) != 4) & (iter < numSteps)) {
+			// Wait for data to be valid
+			do {
+				status = AD5933_GetRegisterValue(AD5933_STATUS_REG,1);
+
+				if ((status & AD5933_STATUS_DATA_VALID) != 2) {
+					AD5933_SetRegisterValue(AD5933_CONTROL_REG_HB, AD5933_CONTROL_FUNCTION(AD5933_REPEAT_FREQ), 1);
+				}
+			} while ((status & AD5933_STATUS_DATA_VALID) != 2);
+
+
+			// Get real data
+			realData = AD5933_GetRegisterValue(AD5933_REAL_REG_HB, 2);
+
+			if (realData <= 32767) {
+
+			} else {
+				realData = realData & 32767;
+				realData = realData - 65536;
+			}
+
+			// Get imaginary data
+			imgData  = AD5933_GetRegisterValue(AD5933_IMG_REG_HB, 2);
+
+			if (imgData <= 32767) {
+
+			} else {
+				imgData = imgData & 32767;
+				imgData = imgData - 65536;
+			}
+
+
+			magnitude = sqrtf((realData * realData) + (imgData * imgData));
+
+
+			impedance = 1/(magnitude*gainFactor);
+
+			avgMag = (avgMag + magnitude);
+			avgImpedance = (avgImpedance + impedance);
+
+			AD5933_SetRegisterValue(AD5933_CONTROL_REG_HB, AD5933_CONTROL_FUNCTION(AD5933_INCR_FREQ), 1);
+			iter = iter + 1;
+
+
+
+		}
+
+		magnitude = avgMag/numSteps;
+		gainFactor = avgGain/numSteps;
+		avgImpedance = avgImpedance/numSteps;
+
+		HAL_Delay(10000);
+	}
+
 	sendStr("Exiting application.\n\r");
+	AD5933_SetRegisterValue(AD5933_CONTROL_REG_HB, AD5933_CONTROL_FUNCTION(AD5933_POWER_DOWN), 1);
 	return (0);
 }
 
